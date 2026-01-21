@@ -11,29 +11,80 @@
       position: fixed;
       top: 32px;
       right: 36px;
-
+    
       display: flex;
       gap: 24px;
-
+    
       font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
       font-size: 0.95rem;
       letter-spacing: 0.05em;
       text-transform: uppercase;
-
+    
       z-index: 20;
     }
-
+    
     #nav-ui a {
       color: rgba(29, 44, 74, 0.85);
       text-decoration: none;
-      pointer-events: auto; /* clickable */
-      transition: opacity 0.2s ease;
+      pointer-events: auto;
+      transition: opacity 0.2s ease, color 0.2s ease;
     }
-
+    
     #nav-ui a:hover {
       color: #000000;
       opacity: 1;
     }
+    
+    /* --- Dropdown --- */
+    .nav-item {
+      position: relative; /* anchor for absolute dropdown */
+      display: inline-flex;
+      align-items: center;
+    }
+    
+    .dropdown {
+      position: absolute;
+      top: calc(100% + 10px);
+      left: 50%;
+      transform: translateX(-50%);
+    
+      min-width: 190px;
+      padding: 10px 12px;
+    
+      background: rgba(255, 255, 255, 0.5); /* 50% opaque white */
+      border-radius: 10px;
+    
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    
+      transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s ease;
+      z-index: 30;
+    }
+    
+    .dropdown a {
+      color: rgba(29, 44, 74, 0.85);
+      text-transform: none;         /* optional: keeps “Feed My Cat” readable */
+      letter-spacing: 0.02em;       /* optional: slightly less shouty */
+      opacity: 1;
+    }
+    
+    .dropdown a:hover {
+      color: #000000; /* matches your hover behavior */
+    }
+    
+    /* show dropdown on hover (either link or dropdown itself) */
+    .has-dropdown:hover .dropdown {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+      transform: translateX(-50%) translateY(2px);
+    }
+
 
 
   </style>
@@ -52,9 +103,19 @@
 <body>
   <div id="nav-ui">
     <a href="projects/pages/books.html">Books</a>
-    <a href="projects/pages/projects.html">Projects</a>
+  
+    <div class="nav-item has-dropdown">
+      <a class="nav-link" href="projects/pages/projects.html">Projects</a>
+  
+      <div class="dropdown" aria-label="Projects submenu">
+        <a href="https://ellenpan.com/Heartz/">Heartz</a>
+        <a href="https://ellenpan.com/feed_my_cat/">Feed My Cat</a>
+      </div>
+    </div>
+  
     <a href="projects/pages/contact.html">Contact</a>
   </div>
+
 
 
 <script type="module">
@@ -231,7 +292,7 @@ function applyDustMaterial(dustRoot) {
 // ===============================
 const loader = new GLTFLoader();
 loader.load(
-  './final_1.19.glb',
+  './final_1.21.glb',
   (gltf) => {
     scene.add(gltf.scene);
 
