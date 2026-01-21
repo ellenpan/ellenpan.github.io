@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Ellen Office Room</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; }
+    canvas { display: block; }
+
+    #nav-ui {
+      position: fixed;
+      top: 32px;
+      right: 36px;
+
+      display: flex;
+      gap: 24px;
+
+      font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-size: 0.95rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+
+      z-index: 20;
+    }
+
+    #nav-ui a {
+      color: rgba(29, 44, 74, 0.85);
+      text-decoration: none;
+      pointer-events: auto;
+      transition: opacity 0.2s ease, color 0.2s ease;
+    }
+
+    #nav-ui a:hover {
+      color: #000000;
+      opacity: 1;
+    }
+
+    /* --- Dropdown --- */
+    .nav-item {
+      position: relative; /* anchor for absolute dropdown */
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .dropdown {
+      position: absolute;
+      top: calc(100% + 10px);
+      left: 50%;
+      transform: translateX(-50%);
+
+      min-width: 190px;
+      padding: 10px 12px;
+
+      background: rgba(255, 255, 255, 0.5); /* 50% opaque white */
+      border-radius: 10px;
+
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+
+      transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s ease;
+      z-index: 30;
+    }
+
+    .dropdown a {
+      color: rgba(29, 44, 74, 0.85);
+      text-transform: none;         /* optional: keeps “Feed My Cat” readable */
+      letter-spacing: 0.02em;       /* optional: slightly less shouty */
+      opacity: 1;
+    }
+
+    .dropdown a:hover {
+      color: #000000; /* matches your hover behavior */
+    }
+
+    /* show dropdown on hover (either link or dropdown itself) */
+    .has-dropdown:hover .dropdown {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+      transform: translateX(-50%) translateY(2px);
+    }
+
+
+
+  </style>
+
+  <!-- Import map tells the browser where "three" and its addons live -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.149.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+
+<body>
+  <div id="nav-ui">
+    <a href="projects/pages/books.html">Books</a>
+
+    <div class="nav-item has-dropdown">
+      <a class="nav-link" href="projects/pages/projects.html">Projects</a>
+
+      <div class="dropdown" aria-label="Projects submenu">
+        <a href="https://ellenpan.com/Heartz/">Heartz</a>
+        <a href="https://ellenpan.com/feed-my-cat/">Feed My Cat</a>
+      </div>
+    </div>
+
+    <a href="projects/pages/contact.html">Contact</a>
+  </div>
+
+
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+let scene, renderer, camera;
+
+// Blender camera baseline (exact pose)
+const baseCamPos  = new THREE.Vector3();
+const baseCamQuat = new THREE.Quaternion();
+
+// A pivot point we orbit around for parallax
+const pivot = new THREE.Vector3();
+
+// dust
+let dustMat = null;
+let DUST_DENSITY = 0.02; // try 0.02–0.25
+let DUST_FADE    = 20;  // try 2–30 (in your scene units)
+let DUST_MAXALPHA = 0.01;
+
+
+// Look control targets (yaw/pitch offsets from Blender pose)
+let targetPitch = 0; // up/down
+let targetYaw   = 0; // left/right
+
+// Smoothed current yaw/pitch (so it eases)
+let currentPitch = 0;
+let currentYaw   = 0;
+
+const MAX_YAW   = THREE.MathUtils.degToRad(30);
+const MAX_PITCH = THREE.MathUtils.degToRad(20);
+
+// Zoom offset in meters (negative = forward)
+let zoomOffset = 0;
+
+// ===== Parallax / arc controls =====
+// How far the camera slides when looking around (bigger = more parallax)
+const ARC_RADIUS = 25.5; // try 0.10–0.50 depending on room scale
+
+// Pivot point location: in front of the Blender camera by this distance
+// (often feels nicer than pivoting exactly at camera position)
+const ARC_PIVOT_DISTANCE = 28.5; // meters forward from the camera (try 0.5–3.0)
+
+// ===============================
+// SETUP
+// ===============================
+scene = new THREE.Scene();
+scene.background = new THREE.Color(0x133A8F);
+
+renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+
+// --- Color management / tonemapping to match Blender (Filmic-like) ---
+renderer.outputEncoding = THREE.sRGBEncoding;              // three r149
+renderer.toneMapping = THREE.ACESFilmicToneMapping;       // filmic-ish
+renderer.toneMappingExposure = 1.0;                       // try 0.6–1.2
+
+// --- Light intensity handling (helps when importing Blender lights) ---
+renderer.physicallyCorrectLights = true;
+
+// ===============================
+// DUST MATERIAL (fake volumetric)
+// ===============================
+function applyDustMaterial(dustRoot) {
+  // Find a mesh under "dust" that actually has geometry bounds
+  let meshForBounds = null;
+  dustRoot.traverse((o) => { if (!meshForBounds && o.isMesh && o.geometry) meshForBounds = o; });
+  if (!meshForBounds) {
+    console.warn('Dust object has no mesh/geometry under it.');
+    return;
+  }
+
+  const geom = meshForBounds.geometry;
+  if (!geom.boundingBox) geom.computeBoundingBox();
+  const bb = geom.boundingBox;
+
+  // Half-size in GEOMETRY local space
+  const halfSize = new THREE.Vector3(
+    (bb.max.x - bb.min.x) * 0.5,
+    (bb.max.y - bb.min.y) * 0.5,
+    (bb.max.z - bb.min.z) * 0.5
+  );
+
+  // Material
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 1.0,                 // overridden in shader
+    roughness: 1.0,
+    metalness: 0.0,
+    emissive: new THREE.Color(0xffffff),
+    emissiveIntensity: 0.10,
+    side: THREE.BackSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+
+  mat.onBeforeCompile = (shader) => {
+    // uniforms we will update live
+    shader.uniforms.uInvWorld   = { value: new THREE.Matrix4() };
+    shader.uniforms.uHalfSize   = { value: halfSize.clone() };
+    shader.uniforms.uFade       = { value: DUST_FADE };
+    shader.uniforms.uDensity    = { value: DUST_DENSITY };
+    shader.uniforms.uMaxAlpha   = { value: DUST_MAXALPHA };
+
+    // pass world position
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <common>',
+      `#include <common>
+       varying vec3 vWorldPos;`
+    );
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+       vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;`
+    );
+
+    // inject into fragment
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <common>',
+      `#include <common>
+       varying vec3 vWorldPos;
+       uniform mat4 uInvWorld;
+       uniform vec3 uHalfSize;
+       uniform float uFade;
+       uniform float uDensity;
+       uniform float uMaxAlpha;`
+    );
+
+    shader.fragmentShader = shader.fragmentShader.replace(
+      'gl_FragColor = vec4( outgoingLight, diffuseColor.a );',
+      `
+      // Convert world position -> dust local space (handles rotation/scale!)
+      vec3 pLocal = (uInvWorld * vec4(vWorldPos, 1.0)).xyz;
+
+      // Distance to inner walls of a box centered at origin with half extents uHalfSize
+      vec3 dToWall = uHalfSize - abs(pLocal);
+      float edgeDist = min(dToWall.x, min(dToWall.y, dToWall.z));
+
+      // 0 at walls, 1 deeper inside over uFade thickness
+      float fade = smoothstep(0.0, uFade, edgeDist);
+
+      float alpha = fade * uDensity;
+      alpha = clamp(alpha, 0.0, uMaxAlpha);
+
+      gl_FragColor = vec4(outgoingLight, alpha);
+      `
+    );
+
+    mat.userData.shader = shader; // store compiled shader so we can update uniforms live
+  };
+
+  // Apply to all meshes under dust
+  dustRoot.traverse((o) => {
+    if (!o.isMesh) return;
+    o.material = mat;
+    o.renderOrder = 999;
+    o.frustumCulled = false;
+  });
+
+  mat.needsUpdate = true; // force recompilation with our shader injection
+  dustMat = mat;          // keep a handle for animate()
+}
+
+
+
+
+
+// ===============================
+// LOAD GLB & USE BLENDER CAMERA
+// ===============================
+const loader = new GLTFLoader();
+loader.load(
+  './final_1.21.glb',
+  (gltf) => {
+    scene.add(gltf.scene);
+
+    gltf.scene.updateMatrixWorld(true);
+
+    const dust = gltf.scene.getObjectByName('dust');
+    console.log("Dust object found:", dust);
+    if (dust) applyDustMaterial(dust);
+
+    const blenderCam =
+      gltf.scene.getObjectByName('Camera') ||
+      gltf.scene.getObjectByProperty('type', 'PerspectiveCamera');
+
+    console.log("Blender camera found:", blenderCam);
+
+    if (!blenderCam) {
+      console.error('No camera found in GLB! Make sure you exported a camera named "Camera" from Blender.');
+      return;
+    }
+
+    blenderCam.getWorldPosition(baseCamPos);
+    blenderCam.getWorldQuaternion(baseCamQuat);
+
+    camera = new THREE.PerspectiveCamera(
+      blenderCam.fov,
+      window.innerWidth / window.innerHeight,
+      blenderCam.near,
+      blenderCam.far
+    );
+
+    camera.position.copy(baseCamPos);
+    camera.quaternion.copy(baseCamQuat);
+    scene.add(camera);
+
+    // Build a pivot point in front of the Blender camera.
+    // This is the "focus point" we orbit around for parallax.
+    const baseForward = new THREE.Vector3(0, 0, -1).applyQuaternion(baseCamQuat);
+    pivot.copy(baseCamPos).add(baseForward.multiplyScalar(ARC_PIVOT_DISTANCE));
+
+    animate();
+  },
+  undefined,
+  (err) => {
+    console.error('Error loading GLB:', err);
+  }
+);
+
+// ===============================
+// INPUT: POINTER ROTATION (hover-based — no click/drag)
+// ===============================
+// Map pointer position across the viewport to yaw/pitch targets.
+// Move horizontally => yaw, vertically => pitch.
+const POINTER_SENSITIVITY = 1.0; // lower = less rotation for same mouse move
+
+document.addEventListener('pointermove', (e) => {
+  if (!camera) return;
+
+  // Normalized coords from -1 .. +1 (center = 0,0)
+  const nx = (e.clientX / window.innerWidth  - 0.5) * 2;
+  const ny = (e.clientY / window.innerHeight - 0.5) * 2;
+
+  // Map normalized coords to angular range; invert Y so moving mouse up looks up
+  targetYaw   = THREE.MathUtils.clamp(-nx * MAX_YAW * POINTER_SENSITIVITY, -MAX_YAW, MAX_YAW);
+  targetPitch = THREE.MathUtils.clamp(-ny * MAX_PITCH * POINTER_SENSITIVITY, -MAX_PITCH, MAX_PITCH);
+});
+
+
+// ===============================
+// INPUT: SCROLL ZOOM
+// ===============================
+document.addEventListener('wheel', (e) => {
+  if (!camera) return;
+
+  const step = 0.2;
+  const dir = e.deltaY > 0 ? -1 : 1;
+
+  zoomOffset = THREE.MathUtils.clamp(zoomOffset + dir * step, -1, 0);
+}, { passive: true });
+
+// ===============================
+// RENDER LOOP
+// ===============================
+function animate() {
+  requestAnimationFrame(animate);
+
+  if (!camera) return;
+
+  // Smooth toward targets
+  currentYaw   += (targetYaw - currentYaw) * 0.03;
+  currentPitch += (targetPitch - currentPitch) * 0.03;
+
+  // Yaw/pitch relative to Blender camera pose
+  const qYaw   = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), currentYaw);
+  const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), currentPitch);
+
+  // Orientation: base * yaw * pitch
+  const viewQuat = baseCamQuat.clone().multiply(qYaw).multiply(qPitch);
+  camera.quaternion.copy(viewQuat);
+
+  // --- ARC TRANSLATION (parallax) ---
+  // Compute an offset on a small sphere around the pivot.
+  // Think: camera "slides" around the focus point as you look.
+  const offsetLocal = new THREE.Vector3(0, 0, ARC_RADIUS);
+  const offsetWorld = offsetLocal.applyQuaternion(viewQuat);
+
+  // Start position = pivot + arc offset (gives parallax)
+  camera.position.copy(pivot).add(offsetWorld);
+
+  // --- Zoom: move camera toward/away from pivot along current view direction
+  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(viewQuat);
+  camera.position.add(forward.multiplyScalar(zoomOffset));
+
+  // Ensure camera actually looks at the pivot (stable “focus” feel)
+  camera.lookAt(pivot);
+
+  // Live-update dust uniforms (so changing numbers actually does something)
+  if (dustMat?.userData?.shader) {
+    const shader = dustMat.userData.shader;
+
+    // IMPORTANT: this is the transform from world -> dust local space
+    // We use the FIRST mesh under "dust" as reference; if "dust" is a single mesh, it's perfect.
+    const dustObj = scene.getObjectByName('dust');
+    if (dustObj) {
+      dustObj.updateMatrixWorld(true);
+      shader.uniforms.uInvWorld.value.copy(dustObj.matrixWorld).invert();
+    }
+
+    shader.uniforms.uFade.value = DUST_FADE;
+    shader.uniforms.uDensity.value = DUST_DENSITY;
+    shader.uniforms.uMaxAlpha.value = DUST_MAXALPHA;
+  }
+
+
+  renderer.render(scene, camera);
+}
+
+// ===============================
+// RESIZE
+// ===============================
+window.addEventListener('resize', () => {
+  if (!camera) return;
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>
